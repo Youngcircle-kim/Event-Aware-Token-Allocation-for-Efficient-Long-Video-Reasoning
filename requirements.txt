@@ -1,0 +1,23 @@
+# Core
+numpy>=1.24.0
+scipy>=1.11.0
+dataclasses-json>=0.6.0
+
+# Testing & mock-phase only — no GPU needed
+pytest>=7.4.0
+pyyaml>=6.0
+
+# Real-implementation deps (uncomment when GPU is ready)
+# torch>=2.1.0
+# torchvision>=0.16.0
+# transformers>=4.45.0
+# accelerate>=0.30.0
+# bitsandbytes>=0.43.0  # for 4-bit quantization on 2080 Ti
+# decord>=0.6.0         # fast video I/O
+# open_clip_torch>=2.24.0
+# pyscenedetect>=0.6.2
+# xformers>=0.0.23      # memory-efficient attention (Flash-Attn alternative)
+
+# Visualization & tracking
+matplotlib>=3.7.0
+# wandb>=0.16.0         # uncomment for experiment tracking
