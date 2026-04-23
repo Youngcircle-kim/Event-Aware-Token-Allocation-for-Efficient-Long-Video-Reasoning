@@ -48,27 +48,26 @@ def load_videomme_long(
     probe_duration: bool = True,
     skip_missing_videos: bool = True,
 ) -> List[VideoMMELongExample]:
-    """
-    Load the long-subset dataset produced by download_videomme_long.py.
-
-    Args:
-        json_path: path to long_dataset.json
-        probe_duration: if True, measure actual video duration using decord.
-                        Adds a second or two to load time per video.
-        skip_missing_videos: skip rows whose video file is missing.
-
-    Returns:
-        List of VideoMMELongExample.
-    """
-    with open(json_path, 'r', encoding='utf-8') as f:
+    json_path_obj = Path(json_path).resolve()
+    with json_path_obj.open('r', encoding='utf-8') as f:
         data = json.load(f)
     examples = []
+    project_root = json_path_obj.parent.parent
     for row in data:
         options = row.get("options", [])
         if options is None:
             options = []
         elif not isinstance(options, list):
             options = list(options)
+        raw_video_path = row.get("video_path")
+
+        video_path = None
+        if raw_video_path:
+            p = Path(raw_video_path)
+            if p.is_absolute():
+                video_path = str(p)
+            else:
+                video_path = str((project_root / p).resolve())
         ex = VideoMMELongExample(
             video_id=str(row.get("video_id", "")),
             duration=str(row.get("duration", "")),
@@ -81,16 +80,12 @@ def load_videomme_long(
             question=str(row.get("question", "")),
             options=options,
             answer=str(row.get("answer", "")),
-            video_path=row.get("video_path"),
+            video_path=video_path,
             gt_timestamp=row.get("gt_timestamp"),
         )
-
         if skip_missing_videos and not ex.video_exists:
             continue
-
         if probe_duration and ex.video_exists and ex.video_path:
             ex.video_duration_sec = _probe_duration(ex.video_path)
-
         examples.append(ex)
-
     return examples
