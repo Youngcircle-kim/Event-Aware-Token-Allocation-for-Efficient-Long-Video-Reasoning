@@ -1,45 +1,38 @@
 import time
-from typing import Dict, Any
+from typing import Any, Dict
 
 from src.methods.real_utils import (
     get_video_meta,
     uniform_frame_indices,
+    load_frames_as_pil,
 )
+from src.models.qwen_vl_mcq import QwenVLMCQ
 
 
 class UniformBaselineReal:
-    def __init__(self):
+    def __init__(self, qa_model: QwenVLMCQ):
         self.name = "uniform_real"
+        self.qa_model = qa_model
 
     def run(self, example, token_budget: int) -> Dict[str, Any]:
-        """
-        example: VideoMMELongExample
-        return: dict expected by run_full_eval.py
-        """
-        t0 = time.perf_counter()
+        _, num_frames, _, _ = get_video_meta(example.video_path)
 
-        vr, num_frames, fps, duration = get_video_meta(example.video_path)
-
-        stage1_latency = 0.0
-
+        stage1_start = time.perf_counter()
         indices = uniform_frame_indices(num_frames, token_budget)
+        stage1_latency = time.perf_counter() - stage1_start
 
-        # TODO: real MLLM inference 연결 전까지는 dummy output
-        # 현재는 파이프라인 검증용
         stage2_start = time.perf_counter()
-
-        predicted_answer = "A"   # 임시 baseline
-        raw_output = (
-            f"[DUMMY] Uniform baseline selected {len(indices)} frames "
-            f"from {example.video_id}. Replace with Qwen2-VL inference."
+        frames = load_frames_as_pil(example.video_path, indices)
+        qa_result = self.qa_model.answer_mcq(
+            frames=frames,
+            question=example.question,
+            options=example.options,
         )
-
         stage2_latency = time.perf_counter() - stage2_start
-        _ = vr  # keep explicit for clarity
 
         return {
-            "predicted_answer": predicted_answer,
-            "raw_output": raw_output,
+            "predicted_answer": qa_result["predicted_answer"],
+            "raw_output": qa_result["raw_output"],
             "num_visual_tokens": int(len(indices)),
             "num_frames_used": int(len(indices)),
             "stage1_latency_s": float(stage1_latency),

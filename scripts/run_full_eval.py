@@ -28,7 +28,8 @@ from src.eval.metrics import (
 from src.data.videomme_loader import load_videomme_long
 from src.methods.uniform_real import UniformBaselineReal
 from src.methods.event_aware_real import EventAwareMethodReal
-
+from src.models.qwen_vl_mcq import QwenVLMCQ
+from src.data.videomme_loader import load_videomme_long
 
 def run_method_at_budget(
     method, examples: List, token_budget: int, method_name: str,
@@ -95,6 +96,7 @@ def main():
                         default=["uniform", "event_aware"],
                         help="Methods to evaluate")
     parser.add_argument("--output_dir", default="./results")
+    parser.add_argument("--qwen_path", type=str, required=True)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -111,11 +113,15 @@ def main():
 
     # Initialize methods
     print("Initializing methods (this loads Qwen2-VL, ~1 minute)...")
+    qa_model = QwenVLMCQ(model_name_or_path=args.qwen_path)
     methods = {}
+
     if "uniform" in args.methods:
-        methods["uniform"] = UniformBaselineReal()
+        methods["uniform"] = UniformBaselineReal(qa_model=qa_model)
+
     if "event_aware" in args.methods:
-        methods["event_aware"] = EventAwareMethodReal()
+
+        methods["event_aware"] = EventAwareMethodReal(qa_model=qa_model)
 
     # Run all (method, budget) combinations
     all_results = {}  # {method_name: {budget: [SampleResult]}}

@@ -1,113 +1,100 @@
 from pathlib import Path
-from typing import List, Tuple
-import numpy as np
+from typing import List, Sequence, Tuple
+
 import decord
+import numpy as np
+from numpy.typing import NDArray
+from PIL import Image
 
-
-VIDEO_EXTS = [".mp4", ".webm", ".mkv", ".avi", ".mov"]
-
-
-def load_video_reader(video_path: str) -> decord.VideoReader:
-    return decord.VideoReader(video_path)
+IntArray = NDArray[np.int_]
 
 
 def get_video_meta(video_path: str) -> Tuple[decord.VideoReader, int, float, float]:
-    vr = load_video_reader(video_path)
+    vr = decord.VideoReader(str(Path(video_path)))
     num_frames = len(vr)
     fps = float(vr.get_avg_fps())
     duration = num_frames / fps if fps > 0 else 0.0
     return vr, num_frames, fps, duration
 
 
-def uniform_frame_indices(num_frames: int, budget: int) -> np.ndarray:
+def uniform_frame_indices(num_frames: int, budget: int) -> IntArray:
     if num_frames <= 0 or budget <= 0:
         return np.array([], dtype=int)
-    budget = min(budget, num_frames)
+    budget = min(num_frames, budget)
     return np.linspace(0, num_frames - 1, budget, dtype=int)
 
 
-def timestamps_from_indices(indices: np.ndarray, fps: float) -> np.ndarray:
-    if fps <= 0 or len(indices) == 0:
-        return np.array([], dtype=float)
-    return indices.astype(float) / fps
+def load_frames_as_pil(video_path: str, indices: Sequence[int] | IntArray) -> List[Image.Image]:
+    idx = np.asarray(indices, dtype=int)
+    if idx.size == 0:
+        return []
+
+    vr = decord.VideoReader(str(Path(video_path)))
+    batch = vr.get_batch(idx).asnumpy()
+    return [Image.fromarray(arr) for arr in batch]
 
 
-def simple_event_boundaries(
-    num_frames: int,
-    fps: float,
-    stage1_stride_sec: float = 2.0,
-    diff_threshold: float = 20.0,
-):
-    """
-    Very lightweight event segmentation:
-    1) sample sparse frames
-    2) compute mean absolute RGB difference
-    3) cut boundary if difference exceeds threshold
-    """
+def simple_event_boundaries(num_frames: int, fps: float, stage1_stride_sec: float = 2.0) -> IntArray:
     if num_frames <= 1:
-        return [0, num_frames]
+        return np.array([0, num_frames], dtype=int)
 
     stride = max(1, int(round(stage1_stride_sec * fps)))
-    sparse_indices = np.arange(0, num_frames, stride, dtype=int)
-    if sparse_indices[-1] != num_frames - 1:
-        sparse_indices = np.append(sparse_indices, num_frames - 1)
+    boundaries = np.arange(0, num_frames, stride, dtype=int)
 
-    return sparse_indices
+    if boundaries.size == 0 or boundaries[0] != 0:
+        boundaries = np.insert(boundaries, 0, 0)
+    if boundaries[-1] != num_frames:
+        boundaries = np.append(boundaries, num_frames)
 
-
-def allocate_budget_by_segment_lengths(boundaries: np.ndarray, total_budget: int) -> List[int]:
-    """
-    Allocate frame budget roughly proportional to segment length, with at least 1 per segment if possible.
-    """
-    if len(boundaries) < 2:
-        return [total_budget]
-
-    lengths = np.diff(boundaries).astype(float)
-    lengths = np.maximum(lengths, 1.0)
-
-    if total_budget <= 0:
-        return [0] * len(lengths)
-
-    base = np.zeros(len(lengths), dtype=int)
-
-    if total_budget >= len(lengths):
-        base += 1
-        remaining = total_budget - len(lengths)
-    else:
-        # not enough budget for every event
-        order = np.argsort(-lengths)
-        for i in order[:total_budget]:
-            base[i] = 1
-        return base.tolist()
-
-    weights = lengths / lengths.sum()
-    extra = np.floor(weights * remaining).astype(int)
-    base += extra
-
-    shortfall = total_budget - base.sum()
-    if shortfall > 0:
-        order = np.argsort(-lengths)
-        for i in order[:shortfall]:
-            base[i] += 1
-
-    return base.tolist()
+    return boundaries.astype(int)
 
 
-def sample_indices_within_segments(boundaries: np.ndarray, allocations: List[int]) -> np.ndarray:
+def allocate_budget_by_segment_lengths(
+    boundaries: Sequence[int] | IntArray,
+    total_budget: int,
+) -> List[int]:
+    b = np.asarray(boundaries, dtype=int)
+
+    if b.size < 2 or total_budget <= 0:
+        return []
+
+    lengths = np.diff(b)
+    lengths = np.maximum(lengths, 1)
+    total_len = int(lengths.sum())
+
+    alloc = np.floor(lengths / total_len * total_budget).astype(int)
+
+    while int(alloc.sum()) < total_budget:
+        idx = int(np.argmax(lengths - alloc))
+        alloc[idx] += 1
+
+    return alloc.tolist()
+
+
+def sample_indices_within_segments(
+    boundaries: Sequence[int] | IntArray,
+    allocations: Sequence[int],
+) -> IntArray:
+    b = np.asarray(boundaries, dtype=int)
+
+    if b.size < 2:
+        return np.array([], dtype=int)
+
     out = []
-    for i, n_k in enumerate(allocations):
-        if n_k <= 0:
+    for i, k in enumerate(allocations):
+        if k <= 0:
             continue
-        start = int(boundaries[i])
-        end = int(boundaries[i + 1])
+
+        start = int(b[i])
+        end = int(b[i + 1])
         if end <= start:
             continue
-        if end - start <= n_k:
-            idxs = np.arange(start, end, dtype=int)
-        else:
-            idxs = np.linspace(start, end - 1, n_k, dtype=int)
+
+        n = min(int(k), end - start)
+        idxs = np.linspace(start, end - 1, n, dtype=int)
         out.append(idxs)
 
     if not out:
         return np.array([], dtype=int)
-    return np.unique(np.concatenate(out))
+
+    return np.unique(np.concatenate(out)).astype(int)
