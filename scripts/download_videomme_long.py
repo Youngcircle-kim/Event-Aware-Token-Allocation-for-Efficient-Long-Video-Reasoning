@@ -102,13 +102,30 @@ def is_long_duration(value, threshold_seconds: int) -> bool:
     return parsed >= threshold_seconds
 
 
-def safe_list(value) -> list:
-    if isinstance(value, list):
-        return value
-    if pd.isna(value):
+def safe_list(value):
+    import numpy as np
+
+    if value is None:
         return []
-    if isinstance(value, tuple):
+
+    if isinstance(value, float) and pd.isna(value):
+        return []
+
+    if isinstance(value, str):
+        return [value]
+
+    if isinstance(value, (list, tuple)):
         return list(value)
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    try:
+        if pd.isna(value):
+            return []
+    except Exception:
+        pass
+
     return [value]
 
 
