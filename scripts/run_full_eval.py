@@ -56,7 +56,7 @@ def run_method_at_budget(
         result = SampleResult(
             video_id=ex.video_id,
             question_id=ex.question_id,
-            duration_category=ex.duration_category,
+            duration_category=ex.duration,
             task_type=ex.task_type,
             domain=ex.domain,
             video_duration_sec=ex.video_duration_sec,
