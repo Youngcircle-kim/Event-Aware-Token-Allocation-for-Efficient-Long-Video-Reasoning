@@ -28,10 +28,9 @@ class VideoMMELongExample:
     video_path: Optional[str]
     video_duration_sec: Optional[float] = None
     gt_timestamp: Optional[Tuple[float, float]] = None
-
     @property
     def video_exists(self):
-        return Path(self.url).exists()
+        return bool(self.video_path) and Path(self.video_path).exists()
 
 
 def _probe_duration(video_path: str) -> Optional[float]:
