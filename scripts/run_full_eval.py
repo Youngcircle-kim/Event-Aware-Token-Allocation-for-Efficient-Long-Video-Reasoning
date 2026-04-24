@@ -144,12 +144,13 @@ def main():
             qa_model=qa_model,
             clip_scorer=clip_scorer,
             stage1_stride_sec=2.0,
-            min_event_sec=8.0,
-            max_segments=80,
-            allocation_temperature=1.0,
+            min_event_sec=15.0,
+            max_segments=None,
+            allocation_temperature=0.3,   
             relevance_temperature=0.07,
-            complexity_weight=0.4,
-            relevance_weight=0.6,
+            complexity_weight=0.5,        
+            relevance_weight=0.5,         
+            importance_mode="multiply",   
         )
 
     # Run all (method, budget) combinations

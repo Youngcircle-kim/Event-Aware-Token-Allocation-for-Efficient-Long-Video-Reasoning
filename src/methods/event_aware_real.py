@@ -18,17 +18,19 @@ from src.models.qwen_vl_mcq import QwenVLMCQ
 
 
 class EventAwareMethodReal:
+    # 바꿀 코드
     def __init__(
         self,
         qa_model: QwenVLMCQ,
         clip_scorer: CLIPRelevanceScorer,
         stage1_stride_sec: float = 2.0,
-        min_event_sec: float = 8.0,
-        max_segments: int = 80,
-        allocation_temperature: float = 1.0,
+        min_event_sec: float = 15.0,          # 8.0 → 15.0
+        max_segments: int | None = None,              # 80 → None (budget-aware)
+        allocation_temperature: float = 0.3,  # 1.0 → 0.3
         relevance_temperature: float = 0.07,
         complexity_weight: float = 0.5,
         relevance_weight: float = 0.5,
+        importance_mode: str = "multiply",    # 새 파라미터 추가
     ):
         self.name = "event_aware_clip_relevance"
         self.stage1_stride_sec = stage1_stride_sec
@@ -40,10 +42,13 @@ class EventAwareMethodReal:
         self.relevance_weight = relevance_weight
         self.qa_model = qa_model
         self.clip_scorer = clip_scorer
+        self.importance_mode = importance_mode
 
     def run(self, example, token_budget: int) -> Dict[str, Any]:
         _, num_frames, fps, duration = get_video_meta(example.video_path)
-
+        max_segs = self.max_segments
+        if max_segs is None:
+            max_segs = max(2, min(token_budget // 2, 32))
         stage1_start = time.perf_counter()
 
         boundaries = visual_change_event_boundaries(
@@ -53,7 +58,7 @@ class EventAwareMethodReal:
             sample_stride_sec=self.stage1_stride_sec,
             threshold_percentile=85.0,
             min_event_sec=self.min_event_sec,
-            max_segments=self.max_segments,
+            max_segments=max_segs, 
         )
 
         complexity_scores = compute_segment_complexity_scores(
@@ -77,20 +82,25 @@ class EventAwareMethodReal:
         relevance_scores = normalize_scores(relevance_scores)
         complexity_scores = normalize_scores(complexity_scores)
 
-        importance_scores = (
-            self.complexity_weight * complexity_scores
-            + self.relevance_weight * relevance_scores
-        )
+        eps = 0.01
+        if self.importance_mode == "multiply":
+            importance_scores = (complexity_scores + eps) * (relevance_scores + eps)
+        else:
+            importance_scores = (
+                self.complexity_weight * complexity_scores
+                + self.relevance_weight * relevance_scores
+            )
 
         importance_scores = normalize_scores(importance_scores)
 
         num_events = len(boundaries) - 1
-        min_per_event = 1 if num_events <= token_budget else 0
+        n_min = 1 if (num_events > 0 and num_events <= token_budget) else 0
+
 
         allocations = allocate_budget_by_importance(
             importance=importance_scores,
             total_budget=token_budget,
-            min_per_event=min_per_event,
+            min_per_event=n_min,
             temperature=self.allocation_temperature,
         )
 
