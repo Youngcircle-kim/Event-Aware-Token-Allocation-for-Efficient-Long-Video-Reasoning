@@ -216,18 +216,17 @@ def visual_change_event_boundaries(
 
     return boundaries.astype(int)
 
-def normalize_scores(x: NDArray[np.float32], eps: float = 1e-6) -> NDArray[np.float32]:
+def normalize_scores(
+    x: Sequence[float] | NDArray[np.float32] | NDArray[np.float64],
+    eps: float = 1e-6,
+) -> NDArray[np.float32]:
     x = np.asarray(x, dtype=np.float32)
-
     if x.size == 0:
         return x
-
     min_v = float(np.min(x))
     max_v = float(np.max(x))
-
     if max_v - min_v < eps:
         return np.ones_like(x, dtype=np.float32)
-
     return ((x - min_v) / (max_v - min_v + eps)).astype(np.float32)
 
 def compute_segment_complexity_scores(

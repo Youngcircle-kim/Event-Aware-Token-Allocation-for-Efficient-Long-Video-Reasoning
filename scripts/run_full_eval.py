@@ -19,6 +19,7 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict
+from src.models.clip_relevance import CLIPRelevanceScorer
 
 import torch
 from src.eval.metrics import (
@@ -97,6 +98,18 @@ def main():
                         help="Methods to evaluate")
     parser.add_argument("--output_dir", default="./results")
     parser.add_argument("--qwen_path", type=str, required=True)
+    parser.add_argument(
+    "--clip_path",
+    type=str,
+    default="openai/clip-vit-base-patch32",
+    help="CLIP model name or local path",
+    )
+    parser.add_argument(
+        "--clip_frames_per_event",
+        type=int,
+        default=4,
+        help="Number of frames per event for CLIP event embedding",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -112,6 +125,7 @@ def main():
     print(f"Loaded {len(examples)} examples.\n")
 
     # Initialize methods
+    # Initialize methods
     print("Initializing methods (this loads Qwen2-VL, ~1 minute)...")
     qa_model = QwenVLMCQ(model_name_or_path=args.qwen_path)
     methods = {}
@@ -120,8 +134,23 @@ def main():
         methods["uniform"] = UniformBaselineReal(qa_model=qa_model)
 
     if "event_aware" in args.methods:
+        print("Initializing CLIP relevance scorer...")
+        clip_scorer = CLIPRelevanceScorer(
+            model_name=args.clip_path,
+            frames_per_event=args.clip_frames_per_event,
+        )
 
-        methods["event_aware"] = EventAwareMethodReal(qa_model=qa_model)
+        methods["event_aware"] = EventAwareMethodReal(
+            qa_model=qa_model,
+            clip_scorer=clip_scorer,
+            stage1_stride_sec=2.0,
+            min_event_sec=8.0,
+            max_segments=80,
+            allocation_temperature=1.0,
+            relevance_temperature=0.07,
+            complexity_weight=0.4,
+            relevance_weight=0.6,
+        )
 
     # Run all (method, budget) combinations
     all_results = {}  # {method_name: {budget: [SampleResult]}}
