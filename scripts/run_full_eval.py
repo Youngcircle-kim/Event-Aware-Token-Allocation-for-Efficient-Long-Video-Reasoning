@@ -150,7 +150,9 @@ def main():
             relevance_temperature=0.07,
             complexity_weight=0.5,        
             relevance_weight=0.5,         
-            importance_mode="multiply",   
+            importance_mode="multiply", 
+            threshold_percentile=85.0,  
+            samples_per_segment=4  
         )
 
     # Run all (method, budget) combinations

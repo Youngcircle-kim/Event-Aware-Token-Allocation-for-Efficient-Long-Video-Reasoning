@@ -8,11 +8,18 @@ import torch.nn.functional as F
 from numpy.typing import NDArray
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
-
+import os, hashlib, pickle
 
 FloatArray = NDArray[np.float32]
 IntArray = NDArray[np.int_]
 
+CACHE_DIR = Path("./cache/clip_embeddings")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def _frame_cache_key(video_path: str, frame_indices: tuple) -> str:
+    """Cache key based on video and specific frame indices, not boundaries."""
+    h = hashlib.md5(f"{video_path}_{frame_indices}".encode()).hexdigest()
+    return h
 
 class CLIPRelevanceScorer:
     def __init__(
@@ -91,64 +98,97 @@ class CLIPRelevanceScorer:
         self,
         video_path: str,
         boundaries: Sequence[int] | IntArray,
-    ) -> FloatArray:
+    ) -> list[FloatArray]:
         b = np.asarray(boundaries, dtype=int)
-        event_embeddings = []
+        event_embeddings_list = []
 
+        # 각 event 별로 frame indices 미리 계산
+        all_event_indices = []
         for i in range(len(b) - 1):
-            start = int(b[i])
-            end = int(b[i + 1])
+            start, end = int(b[i]), int(b[i + 1])
+            if end <= start:
+                all_event_indices.append([])
+            else:
+                n = min(self.frames_per_event, end - start)
+                indices = np.linspace(start, end - 1, n, dtype=int).tolist()
+                all_event_indices.append(indices)
 
-            frames = self.load_event_frames(
-                video_path=video_path,
-                start=start,
-                end=end,
-                num_frames=self.frames_per_event,
-            )
+        # Cache key: video + 모든 frame indices의 flat tuple
+        flat_indices = tuple(idx for ev in all_event_indices for idx in ev)
+        cache_key = _frame_cache_key(video_path, flat_indices)
+        cache_file = CACHE_DIR / f"{cache_key}.pkl"
 
-            if len(frames) == 0:
-                event_embeddings.append(
-                    torch.zeros(self.model.config.projection_dim, device=self.device)
+        if cache_file.exists():
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+
+        # 새로 계산
+        for indices in all_event_indices:
+            if len(indices) == 0:
+                event_embeddings_list.append(
+                    np.zeros((1, self.model.config.projection_dim), dtype=np.float32)
                 )
                 continue
-
+            
+            vr = decord.VideoReader(str(Path(video_path)))
+            batch = vr.get_batch(indices).asnumpy()
+            frames = [Image.fromarray(arr) for arr in batch]
+            
             frame_features = self.encode_images(frames)
+            event_embeddings_list.append(
+                frame_features.detach().cpu().numpy().astype(np.float32)
+            )
 
-            event_feature = frame_features.mean(dim=0)
-            event_feature = F.normalize(event_feature, dim=-1)
+        # 저장
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump(event_embeddings_list, f)
+        except Exception as e:
+            print(f"[Warning] Cache save failed: {e}")
 
-            event_embeddings.append(event_feature)
-
-        if len(event_embeddings) == 0:
-            return np.empty((0, self.model.config.projection_dim), dtype=np.float32)
-
-        event_embeddings_tensor = torch.stack(event_embeddings, dim=0)
-
-        return event_embeddings_tensor.detach().cpu().numpy().astype(np.float32)
-
+        return event_embeddings_list
     @torch.no_grad()
     def compute_query_relevance(
         self,
         question: str,
-        options: Sequence[str],
-        event_embeddings: FloatArray,
+        options: Sequence[str],                  
+        event_embeddings: list[FloatArray],      
         temperature: float = 0.07,
     ) -> FloatArray:
-        if event_embeddings.size == 0:
+        """
+        Compute event relevance using MAX over per-frame similarities.
+        Options are NOT used (CLIP은 4지선다 정답 고르는 모델이 아님; 
+        Qwen2-VL이 그 역할을 함).
+        """
+        if len(event_embeddings) == 0:
             return np.array([], dtype=np.float32)
 
-        # MCQ에서는 question만 쓰는 것보다 options까지 같이 넣는 게 더 안정적임
-        option_text = " ".join([str(opt) for opt in options])
-        query_text = f"{question} {option_text}"
+        # Question만 사용 (options 제외)
+        text_feature = self.encode_text(question)        # [1, D]
+        text_feature = text_feature.squeeze(0)            # [D]
 
-        text_feature = self.encode_text(query_text)
+        # 각 event의 max-similarity 계산
+        event_max_sims = []
+        for event_frames_emb in event_embeddings:         # event_frames_emb: [N_frames, D]
+            if event_frames_emb.shape[0] == 0:
+                event_max_sims.append(0.0)
+                continue
+            
+            # numpy → torch
+            event_tensor = torch.from_numpy(event_frames_emb).to(self.device)
+            event_tensor = F.normalize(event_tensor, dim=-1)
+            
+            # frame별 similarity 계산
+            sims = event_tensor @ text_feature             # [N_frames]
+            
+            # event의 representative similarity = MAX (NOT mean)
+            max_sim = sims.max().item()
+            event_max_sims.append(max_sim)
 
-        event_tensor = torch.from_numpy(event_embeddings).to(self.device)
-        event_tensor = F.normalize(event_tensor, dim=-1)
-
-        similarity = event_tensor @ text_feature.squeeze(0)
-
-        # softmax를 쓰면 event 간 차이가 allocation에 반영됨
-        relevance = torch.softmax(similarity / temperature, dim=0)
+        similarity_array = np.array(event_max_sims, dtype=np.float32)
+        
+        # softmax로 relevance 분포화
+        similarity_tensor = torch.from_numpy(similarity_array).to(self.device)
+        relevance = torch.softmax(similarity_tensor / temperature, dim=0)
 
         return relevance.detach().cpu().numpy().astype(np.float32)

@@ -14,7 +14,7 @@ LETTER_RE = re.compile(r"\b([ABCD])\b", re.IGNORECASE)
 
 def parse_mcq_letter(text: str, options: Optional[List[str]] = None) -> str:
     if not text:
-        return "A"
+        return "?"  
 
     m = LETTER_RE.search(text.strip())
     if m:
@@ -30,8 +30,7 @@ def parse_mcq_letter(text: str, options: Optional[List[str]] = None) -> str:
             if opt and opt.lower() in text.lower():
                 return chr(ord("A") + idx)
 
-    return "A"
-
+    return "?" 
 
 def build_mcq_prompt(question: str, options: List[str]) -> str:
     option_lines = []

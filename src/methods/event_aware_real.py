@@ -30,7 +30,9 @@ class EventAwareMethodReal:
         relevance_temperature: float = 0.07,
         complexity_weight: float = 0.5,
         relevance_weight: float = 0.5,
-        importance_mode: str = "multiply",    # 새 파라미터 추가
+        importance_mode: str = "multiply", 
+        threshold_percentile: float = 85.0,   
+        samples_per_segment: int = 4,
     ):
         self.name = "event_aware_clip_relevance"
         self.stage1_stride_sec = stage1_stride_sec
@@ -43,6 +45,8 @@ class EventAwareMethodReal:
         self.qa_model = qa_model
         self.clip_scorer = clip_scorer
         self.importance_mode = importance_mode
+        self.threshold_percentile = threshold_percentile
+        self.samples_per_segment = samples_per_segment
 
     def run(self, example, token_budget: int) -> Dict[str, Any]:
         _, num_frames, fps, duration = get_video_meta(example.video_path)
@@ -56,7 +60,7 @@ class EventAwareMethodReal:
             num_frames=num_frames,
             fps=fps,
             sample_stride_sec=self.stage1_stride_sec,
-            threshold_percentile=85.0,
+            threshold_percentile=self.threshold_percentile,
             min_event_sec=self.min_event_sec,
             max_segments=max_segs, 
         )
@@ -65,11 +69,11 @@ class EventAwareMethodReal:
             video_path=example.video_path,
             boundaries=boundaries,
             fps=fps,
-            samples_per_segment=4,
+            samples_per_segment=self.samples_per_segment,
         )
         event_embeddings = self.clip_scorer.compute_event_embeddings(
-            video_path=example.video_path,
-            boundaries=boundaries,
+        video_path=example.video_path,
+        boundaries=boundaries,
         )
 
         relevance_scores = self.clip_scorer.compute_query_relevance(
