@@ -52,7 +52,8 @@ class EventAwareMethodReal:
         _, num_frames, fps, duration = get_video_meta(example.video_path)
         max_segs = self.max_segments
         if max_segs is None:
-            max_segs = max(2, min(token_budget // 2, 32))
+            # max_segs = max(2, min(token_budget // 2, 32))
+            max_segs = 4
         stage1_start = time.perf_counter()
 
         boundaries = visual_change_event_boundaries(
