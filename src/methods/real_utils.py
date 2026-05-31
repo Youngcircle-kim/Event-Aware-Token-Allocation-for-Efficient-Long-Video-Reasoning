@@ -122,12 +122,52 @@ def sample_indices_within_segments(
 def limit_num_segments(
         boundaries: Sequence[int] | IntArray,
         max_segments: int = 80,
+        boundary_strengths: dict | None = None,
 ) -> IntArray:
+    """
+    Reduce the number of segments to at most `max_segments`.
+
+    If `boundary_strengths` is provided (mapping frame_idx -> score), the
+    strongest interior boundaries are kept. Otherwise falls back to uniform
+    thinning (legacy behavior; only use when scores are unavailable).
+
+    The first (0) and last (num_frames) boundaries are always preserved
+    because they define the video extent.
+    """
     b = np.asarray(boundaries, dtype=int)
     if b.size <= max_segments + 1:
         return b
-    selected = np.linspace(0, b.size - 1, max_segments + 1, dtype=int)
-    return b[selected].astype(int)
+
+    # First and last are always kept; interior boundaries get ranked.
+    first, last = int(b[0]), int(b[-1])
+    interior = b[1:-1]
+
+    # Target: keep `max_segments + 1` total → `max_segments - 1` interior.
+    n_keep = max(0, max_segments - 1)
+    if n_keep == 0:
+        return np.array([first, last], dtype=int)
+    if interior.size <= n_keep:
+        return b  # already small enough after splitting first/last out
+
+    if boundary_strengths is not None and len(boundary_strengths) > 0:
+        # Rank interior boundaries by their change-score strength.
+        # Missing keys (e.g., merged boundaries that lost their score) get -inf.
+        scores = np.array(
+            [boundary_strengths.get(int(idx), -np.inf) for idx in interior],
+            dtype=np.float64,
+        )
+        # Top-`n_keep` by score; ties broken by earlier position.
+        # Use argsort on (-score, position) for stable ordering.
+        order = np.lexsort((np.arange(interior.size), -scores))
+        kept_local = np.sort(order[:n_keep])
+        kept = interior[kept_local]
+    else:
+        # Legacy fallback: uniform thinning.
+        selected = np.linspace(0, interior.size - 1, n_keep, dtype=int)
+        kept = interior[selected]
+
+    out = np.concatenate([[first], kept, [last]])
+    return np.unique(out).astype(int)
 
 def load_resized_frames_for_scoring(
     video_path: str,
@@ -194,8 +234,20 @@ def visual_change_event_boundaries(
 
     threshold = np.percentile(change_scores, threshold_percentile)
 
-    candidate_positions = np.where(change_scores >= threshold)[0] + 1
+    above_mask = change_scores >= threshold
+    candidate_positions = np.where(above_mask)[0] + 1
     candidate_boundaries = sampled_indices[candidate_positions]
+
+    # Build boundary_idx -> change_score mapping so limit_num_segments
+    # can rank by strength rather than thinning uniformly.
+    boundary_strengths: dict[int, float] = {}
+    for pos, frame_idx in zip(candidate_positions, candidate_boundaries):
+        # pos is the index into change_scores+1; the score itself sits at pos-1
+        score = float(change_scores[pos - 1])
+        # If the same frame_idx appears multiple times (shouldn't, but safety),
+        # keep the strongest.
+        prev = boundary_strengths.get(int(frame_idx), -np.inf)
+        boundary_strengths[int(frame_idx)] = max(prev, score)
 
     boundaries = np.concatenate([
         np.array([0], dtype=int),
@@ -212,6 +264,7 @@ def visual_change_event_boundaries(
     boundaries = limit_num_segments(
         boundaries=boundaries,
         max_segments=max_segments,
+        boundary_strengths=boundary_strengths,
     )
 
     return boundaries.astype(int)
@@ -272,44 +325,141 @@ def allocate_budget_by_importance(
     total_budget: int,
     min_per_event: int = 0,
     temperature: float = 1.0,
+    capacities: Sequence[int] | IntArray | None = None,
 ) -> List[int]:
-    scores = np.asarray(importance, dtype=np.float32)
+    """
+    Allocate `total_budget` frames across events in proportion to importance.
+
+    Args:
+        importance: per-event importance scores (any positive scale).
+        total_budget: total frames to distribute.
+        min_per_event: minimum frames per event. If `K * min_per_event >
+            total_budget`, this constraint is relaxed (with a warning); the
+            method still tries to spread fairly given the budget.
+        temperature: softmax temperature for importance → probability.
+            Lower = sharper. Must be > 0.
+        capacities: optional per-event maximum frame counts (typically the
+            number of frames in each event segment). When provided, allocations
+            are capped at capacity and the overflow is redistributed to events
+            with remaining headroom by importance priority. When None, no
+            capping is performed (caller is responsible for handling overflow).
+
+    Returns:
+        List of int allocations of length K, summing to min(total_budget,
+        sum(capacities)) if capacities is provided, else exactly total_budget.
+    """
+    import warnings
+
+    scores = np.asarray(importance, dtype=np.float64)
 
     if scores.size == 0 or total_budget <= 0:
         return []
 
     scores = np.maximum(scores, 1e-6)
+    num_events = scores.size
+
+    if capacities is not None:
+        caps = np.asarray(capacities, dtype=int)
+        if caps.size != num_events:
+            raise ValueError(
+                f"capacities length {caps.size} != num events {num_events}"
+            )
+        # The effective budget cannot exceed total capacity.
+        effective_budget = int(min(total_budget, int(caps.sum())))
+    else:
+        caps = None
+        effective_budget = int(total_budget)
 
     if temperature <= 0:
         temperature = 1.0
 
     logits = scores / temperature
     logits = logits - np.max(logits)
-
     probs = np.exp(logits)
     probs = probs / np.sum(probs)
 
-    num_events = scores.size
-
-    if min_per_event > 0 and total_budget >= num_events * min_per_event:
-        alloc = np.ones(num_events, dtype=int) * min_per_event
-        remaining = total_budget - int(alloc.sum())
+    # --- Step 1: apply n_min floor if feasible -------------------------------
+    if min_per_event > 0:
+        min_feasible_total = num_events * min_per_event
+        if effective_budget >= min_feasible_total and (
+            caps is None or np.all(caps >= min_per_event)
+        ):
+            alloc = np.full(num_events, min_per_event, dtype=int)
+            remaining = effective_budget - int(alloc.sum())
+        else:
+            # Cannot satisfy n_min for every event; fall back to no-floor
+            # but make the caller aware via a warning instead of silent drop.
+            warnings.warn(
+                f"min_per_event={min_per_event} infeasible "
+                f"(K={num_events}, budget={effective_budget}, "
+                f"min_capacity={int(caps.min()) if caps is not None else 'n/a'})"
+                f" — dropping floor.",
+                RuntimeWarning,
+            )
+            alloc = np.zeros(num_events, dtype=int)
+            remaining = effective_budget
     else:
         alloc = np.zeros(num_events, dtype=int)
-        remaining = total_budget
+        remaining = effective_budget
 
+    # --- Step 2: distribute the remaining budget by importance ---------------
     raw = probs * remaining
-    extra = np.floor(raw).astype(int)
-    alloc += extra
+    floor = np.floor(raw).astype(int)
+    alloc = alloc + floor
+    raw_remainder = raw - floor  # for largest-remainder tie-breaking
 
-    while int(alloc.sum()) < total_budget:
-        residual = raw - np.floor(raw)
-        idx = int(np.argmax(residual))
+    # --- Step 3: cap at capacity and redistribute overflow -------------------
+    if caps is not None:
+        over = np.maximum(alloc - caps, 0)
+        alloc = np.minimum(alloc, caps)
+        overflow_total = int(over.sum())
+        # Redistribute by importance priority, only to events with headroom.
+        if overflow_total > 0:
+            priority = np.argsort(-scores)  # highest importance first
+            i = 0
+            while overflow_total > 0:
+                k = int(priority[i % num_events])
+                if alloc[k] < caps[k]:
+                    alloc[k] += 1
+                    overflow_total -= 1
+                    i += 1
+                else:
+                    i += 1
+                    # If we've gone a full lap without giving, everyone is full.
+                    if i >= num_events * 2:
+                        # Sanity check: every event is at capacity → can't place more.
+                        if np.all(alloc >= caps):
+                            break
+
+    # --- Step 4: top up via largest-remainder if we're below budget ----------
+    while int(alloc.sum()) < effective_budget:
+        if caps is not None:
+            headroom_mask = alloc < caps
+            if not headroom_mask.any():
+                break
+            masked = np.where(headroom_mask, raw_remainder, -np.inf)
+            idx = int(np.argmax(masked))
+        else:
+            idx = int(np.argmax(raw_remainder))
         alloc[idx] += 1
-        raw[idx] = 0
+        raw_remainder[idx] = -np.inf  # don't pick again this round
 
-    while int(alloc.sum()) > total_budget:
-        idx = int(np.argmax(alloc))
+    # --- Step 5: trim if we're over budget (lowest importance first) --------
+    # This loop very rarely runs in normal flow, but is logically correct now:
+    # frames are removed from the LEAST important event with at least 1 frame
+    # (and ideally above its n_min floor; we relax that if necessary).
+    while int(alloc.sum()) > effective_budget:
+        # Prefer events whose allocation exceeds n_min (don't dip below floor).
+        above_floor_mask = alloc > max(min_per_event, 1)
+        if above_floor_mask.any():
+            candidate_scores = np.where(above_floor_mask, scores, np.inf)
+        else:
+            # Everyone is at floor; take from anyone with ≥1 frame.
+            has_frame_mask = alloc >= 1
+            if not has_frame_mask.any():
+                break
+            candidate_scores = np.where(has_frame_mask, scores, np.inf)
+        idx = int(np.argmin(candidate_scores))  # lowest importance
         alloc[idx] -= 1
 
     return alloc.tolist()

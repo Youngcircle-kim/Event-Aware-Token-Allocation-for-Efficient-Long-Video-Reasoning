@@ -16,9 +16,9 @@ IntArray = NDArray[np.int_]
 CACHE_DIR = Path("./cache/clip_embeddings")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-def _frame_cache_key(video_path: str, frame_indices: tuple) -> str:
-    """Cache key based on video and specific frame indices, not boundaries."""
-    h = hashlib.md5(f"{video_path}_{frame_indices}".encode()).hexdigest()
+def _frame_cache_key(video_path: str, frame_indices: tuple, model_name: str) -> str:
+    """Cache key includes model_name so switching CLIP backbones invalidates the cache."""
+    h = hashlib.md5(f"{model_name}_{video_path}_{frame_indices}".encode()).hexdigest()
     return h
 
 class CLIPRelevanceScorer:
@@ -100,10 +100,10 @@ class CLIPRelevanceScorer:
         boundaries: Sequence[int] | IntArray,
     ) -> list[FloatArray]:
         b = np.asarray(boundaries, dtype=int)
-        event_embeddings_list = []
+        event_embeddings_list: list[FloatArray] = []
 
-        # 각 event 별로 frame indices 미리 계산
-        all_event_indices = []
+        # Pre-compute frame indices for every event in a single pass.
+        all_event_indices: list[list[int]] = []
         for i in range(len(b) - 1):
             start, end = int(b[i]), int(b[i + 1])
             if end <= start:
@@ -113,33 +113,43 @@ class CLIPRelevanceScorer:
                 indices = np.linspace(start, end - 1, n, dtype=int).tolist()
                 all_event_indices.append(indices)
 
-        # Cache key: video + 모든 frame indices의 flat tuple
+        # Cache key includes model_name, so switching CLIP backbones invalidates.
         flat_indices = tuple(idx for ev in all_event_indices for idx in ev)
-        cache_key = _frame_cache_key(video_path, flat_indices)
+        cache_key = _frame_cache_key(video_path, flat_indices, self.model_name)
         cache_file = CACHE_DIR / f"{cache_key}.pkl"
 
         if cache_file.exists():
             with open(cache_file, "rb") as f:
                 return pickle.load(f)
 
-        # 새로 계산
+        # Open the video once, decode all required frames in a single batch,
+        # then slice back into per-event chunks. Avoids re-opening the same
+        # file K times (was a meaningful overhead for long videos).
+        flat_idx_list = [idx for ev in all_event_indices for idx in ev]
+        if len(flat_idx_list) > 0:
+            vr = decord.VideoReader(str(Path(video_path)))
+            all_batch = vr.get_batch(flat_idx_list).asnumpy()
+            all_frames = [Image.fromarray(arr) for arr in all_batch]
+        else:
+            all_frames = []
+
+        # Slice per-event and encode.
+        cursor = 0
         for indices in all_event_indices:
             if len(indices) == 0:
                 event_embeddings_list.append(
                     np.zeros((1, self.model.config.projection_dim), dtype=np.float32)
                 )
                 continue
-            
-            vr = decord.VideoReader(str(Path(video_path)))
-            batch = vr.get_batch(indices).asnumpy()
-            frames = [Image.fromarray(arr) for arr in batch]
-            
-            frame_features = self.encode_images(frames)
+
+            event_frames = all_frames[cursor:cursor + len(indices)]
+            cursor += len(indices)
+
+            frame_features = self.encode_images(event_frames)
             event_embeddings_list.append(
                 frame_features.detach().cpu().numpy().astype(np.float32)
             )
 
-        # 저장
         try:
             with open(cache_file, "wb") as f:
                 pickle.dump(event_embeddings_list, f)

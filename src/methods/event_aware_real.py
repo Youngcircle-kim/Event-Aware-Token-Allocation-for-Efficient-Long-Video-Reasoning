@@ -18,7 +18,17 @@ from src.models.qwen_vl_mcq import QwenVLMCQ
 
 
 class EventAwareMethodReal:
-    # 바꿀 코드
+    """
+    Event-Aware Token Allocation (proposed method, real-data version).
+
+    Pipeline:
+      1. Stage-1: detect visual-change event boundaries from a sparse sweep.
+      2. Score each event for (complexity, query relevance) → importance.
+      3. Allocate token_budget frames across events in proportion to importance,
+         capped by per-event capacity (with overflow redistribution).
+      4. Sample within each event uniformly.
+      5. Stage-2: send the selected frames to a QA MLLM.
+    """
     def __init__(
         self,
         qa_model: QwenVLMCQ,
@@ -50,10 +60,17 @@ class EventAwareMethodReal:
 
     def run(self, example, token_budget: int) -> Dict[str, Any]:
         _, num_frames, fps, duration = get_video_meta(example.video_path)
+
+        # Budget-aware default for max_segments. The earlier `max_segs = 4`
+        # hardcode was the single biggest constraint on event-aware quality
+        # — hour-long videos commonly have 5-8 key events, and forcing
+        # everything into 4 segments collapses semantically distinct events
+        # together. Default formula: enough segments to take advantage of the
+        # budget, but capped to avoid pathological cases.
         max_segs = self.max_segments
         if max_segs is None:
-            # max_segs = max(2, min(token_budget // 2, 32))
-            max_segs = 4
+            max_segs = max(2, min(token_budget // 2, 16))
+
         stage1_start = time.perf_counter()
 
         boundaries = visual_change_event_boundaries(
@@ -63,7 +80,7 @@ class EventAwareMethodReal:
             sample_stride_sec=self.stage1_stride_sec,
             threshold_percentile=self.threshold_percentile,
             min_event_sec=self.min_event_sec,
-            max_segments=max_segs, 
+            max_segments=max_segs,
         )
 
         complexity_scores = compute_segment_complexity_scores(
@@ -73,8 +90,8 @@ class EventAwareMethodReal:
             samples_per_segment=self.samples_per_segment,
         )
         event_embeddings = self.clip_scorer.compute_event_embeddings(
-        video_path=example.video_path,
-        boundaries=boundaries,
+            video_path=example.video_path,
+            boundaries=boundaries,
         )
 
         relevance_scores = self.clip_scorer.compute_query_relevance(
@@ -99,14 +116,32 @@ class EventAwareMethodReal:
         importance_scores = normalize_scores(importance_scores)
 
         num_events = len(boundaries) - 1
-        n_min = 1 if (num_events > 0 and num_events <= token_budget) else 0
 
+        # Compute event capacities (frame counts) so the allocator can cap
+        # per-event allocations at their actual frame budget — this prevents
+        # the silent-frame-loss bug where allocations exceeding capacity used
+        # to be truncated without redistribution.
+        event_capacities = np.diff(boundaries).astype(int).tolist()
+
+        # Determine n_min. If a strictly-positive floor is feasible given the
+        # budget AND every event has enough capacity, use 1. Otherwise fall
+        # back to 0 (the allocator will warn). Previously this used a silent
+        # `if/else` that could let events get 0 frames without notice.
+        if (
+            num_events > 0
+            and token_budget >= num_events
+            and min(event_capacities) >= 1
+        ):
+            n_min = 1
+        else:
+            n_min = 0
 
         allocations = allocate_budget_by_importance(
             importance=importance_scores,
             total_budget=token_budget,
             min_per_event=n_min,
             temperature=self.allocation_temperature,
+            capacities=event_capacities,
         )
 
         indices = sample_indices_within_segments(boundaries, allocations)

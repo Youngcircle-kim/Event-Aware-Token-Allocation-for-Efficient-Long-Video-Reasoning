@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import List, Dict
 from src.models.clip_relevance import CLIPRelevanceScorer
+from src.methods.clip_topk_real import CLIPTopKBaseline
 
 import torch
 from src.eval.metrics import (
@@ -130,14 +131,40 @@ def main():
     qa_model = QwenVLMCQ(model_name_or_path=args.qwen_path)
     methods = {}
 
-    if "uniform" in args.methods:
-        methods["uniform"] = UniformBaselineReal(qa_model=qa_model)
-
-    if "event_aware" in args.methods:
+    # CLIP을 쓰는 method가 하나라도 있으면 미리 한 번만 만들어둔다
+    clip_scorer: CLIPRelevanceScorer | None = None
+    if any(m in args.methods for m in ["clip_topk", "event_aware"]):
         print("Initializing CLIP relevance scorer...")
         clip_scorer = CLIPRelevanceScorer(
             model_name=args.clip_path,
             frames_per_event=args.clip_frames_per_event,
+        )
+
+    if "uniform" in args.methods:
+        methods["uniform"] = UniformBaselineReal(qa_model=qa_model)
+
+    if "clip_topk" in args.methods:
+        assert clip_scorer is not None
+        methods["clip_topk"] = CLIPTopKBaseline(
+            qa_model=qa_model,
+            clip_scorer=clip_scorer,
+        )
+
+    if "event_aware" in args.methods:
+        assert clip_scorer is not None
+        methods["event_aware"] = EventAwareMethodReal(
+            qa_model=qa_model,
+            clip_scorer=clip_scorer,
+            stage1_stride_sec=2.0,
+            min_event_sec=15.0,
+            max_segments=None,
+            allocation_temperature=0.3,
+            relevance_temperature=0.07,
+            complexity_weight=0.5,
+            relevance_weight=0.5,
+            importance_mode="multiply",
+            threshold_percentile=85.0,
+            samples_per_segment=4,
         )
 
         methods["event_aware"] = EventAwareMethodReal(
