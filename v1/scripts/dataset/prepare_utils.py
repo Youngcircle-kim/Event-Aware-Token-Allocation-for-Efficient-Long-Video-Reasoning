@@ -78,12 +78,23 @@ def load_table(path: Path) -> list[dict[str, Any]]:
     raise ValueError(f"Unsupported annotation file type: {path}")
 
 
-def write_jsonl(rows: list[dict[str, Any]], path: Path) -> None:
+def write_jsonl(
+    rows: list[dict[str, Any]],
+    path: Path,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            serializable_row = to_json_serializable(row)
+
+            f.write(
+                json.dumps(
+                    serializable_row,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
 
 def find_annotation_files(root: Path) -> list[Path]:
@@ -249,3 +260,34 @@ def parse_float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+def to_json_serializable(value: Any) -> Any:
+    """
+    Recursively convert NumPy/Pandas values into JSON-serializable
+    Python objects.
+    """
+    if isinstance(value, np.ndarray):
+        return [
+            to_json_serializable(item)
+            for item in value.tolist()
+        ]
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {
+            str(key): to_json_serializable(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple, set)):
+        return [
+            to_json_serializable(item)
+            for item in value
+        ]
+
+    return value

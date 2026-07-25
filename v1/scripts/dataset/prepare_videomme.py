@@ -191,7 +191,6 @@ def convert_row(
             "sub_category": get_first_existing(row, ["sub_category", "subcategory"]),
             "task_type_original": get_first_existing(row, ["task_type"]),
             "url": get_first_existing(row, ["url"]),
-            "raw": row,
         },
     }
 
