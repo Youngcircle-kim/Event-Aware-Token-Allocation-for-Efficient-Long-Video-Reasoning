@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalloc"
+version = "0.1.0"
+description = "Event-aware visual token allocation for long-video reasoning"
+requires-python = ">=3.10"
+
+dependencies = [
+    "torch",
+    "torchvision",
+    "transformers",
+    "accelerate",
+    "qwen-vl-utils",
+    "decord",
+    "opencv-python-headless",
+    "Pillow",
+    "numpy",
+    "tqdm",
+    "pandas",
+    "pyarrow",
+    "huggingface_hub",
+    "datasets",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
