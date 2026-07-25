@@ -1,0 +1,96 @@
+# ==========================================
+# 1. Python Bytecode & Cache
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ==========================================
+# 2. Virtual Environments (가상환경)
+# ==========================================
+# 프로젝트 내에 생성된 virtualenv, venv, conda 환경 제외
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+bin/
+include/
+lib/
+lib64/
+share/
+
+# ==========================================
+# 3. Environment Variables & Secrets (보안)
+# ==========================================
+# API 키, DB 비밀번호 등이 포함된 환경변수 파일
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ==========================================
+# 4. IDEs & Code Editors (개발 환경 설정)
+# ==========================================
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# PyCharm / JetBrains
+.idea/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ==========================================
+# 5. Testing & Code Quality Tools
+# ==========================================
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.noserc
+nosetests.xml
+coverage.xml
+
+# mypy / ruff / black / flake8
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ==========================================
+# 6. Build & Package Distribution
+# ==========================================
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# ==========================================
+# 7. Logs & Databases
+# ==========================================
+*.log
+*.sqlite3
+*.db
+
+# ==========================================
+# 8. OS Generated Files
+# ==========================================
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Thumbs.db
