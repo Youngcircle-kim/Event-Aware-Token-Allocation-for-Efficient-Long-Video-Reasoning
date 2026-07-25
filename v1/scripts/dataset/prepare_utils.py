@@ -151,8 +151,20 @@ def normalize_options(raw_options: Any) -> list[str] | None:
     if raw_options is None:
         return None
 
-    if isinstance(raw_options, list):
-        options = [str(x).strip() for x in raw_options if str(x).strip()]
+    try:
+        import numpy as np
+
+        if isinstance(raw_options, np.ndarray):
+            raw_options = raw_options.tolist()
+    except ImportError:
+        pass
+
+    if isinstance(raw_options, (list, tuple)):
+        options = [
+            str(option).strip()
+            for option in raw_options
+            if str(option).strip()
+        ]
         return strip_option_labels(options)
 
     if isinstance(raw_options, str):
@@ -161,22 +173,34 @@ def normalize_options(raw_options: Any) -> list[str] | None:
         if not text:
             return None
 
-        # Try JSON list string
         try:
             parsed = json.loads(text)
+
             if isinstance(parsed, list):
-                options = [str(x).strip() for x in parsed if str(x).strip()]
+                options = [
+                    str(option).strip()
+                    for option in parsed
+                    if str(option).strip()
+                ]
                 return strip_option_labels(options)
+
         except json.JSONDecodeError:
             pass
 
-        # Fallback split
         if "\n" in text:
-            options = [x.strip() for x in text.splitlines() if x.strip()]
+            options = [
+                option.strip()
+                for option in text.splitlines()
+                if option.strip()
+            ]
             return strip_option_labels(options)
 
         if "|" in text:
-            options = [x.strip() for x in text.split("|") if x.strip()]
+            options = [
+                option.strip()
+                for option in text.split("|")
+                if option.strip()
+            ]
             return strip_option_labels(options)
 
         return [text]
