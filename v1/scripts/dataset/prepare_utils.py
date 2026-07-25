@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import numpy as np
 from pathlib import Path
 from typing import Any
 
